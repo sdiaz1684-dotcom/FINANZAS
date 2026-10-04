@@ -1,0 +1,8 @@
+MIS FINANZAS - archivos del repositorio
+
+index.html, manifest.webmanifest, sw.js e icon-*.png  -> la app (GitHub Pages y APK)
+android-icons/                                         -> íconos para la app Android
+.github/workflows/apk.yml                              -> construye Finanzas.apk en cada cambio
+
+El APK aparece en la sección "Releases" del repositorio.
+Nunca subas aquí tu archivo de respaldo (.json) ni el de secretos.
