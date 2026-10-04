@@ -179,6 +179,23 @@ textarea.inp{min-height:180px;font-size:13px;font-family:ui-monospace,Menlo,Cons
 .ctab th:first-child,.ctab td:first-child{text-align:left;text-transform:capitalize}
 .ctab thead th{color:var(--muted);font-weight:600;border-top:0}
 .ctab tr.on td{font-weight:800}
+#lock{position:fixed;inset:0;z-index:100;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;padding:env(safe-area-inset-top,0px) 20px env(safe-area-inset-bottom,0px);user-select:none;-webkit-user-select:none}
+#lock.show{display:flex}
+.lk-logo{margin-bottom:14px}
+.lk-title{font-size:22px;font-weight:800;margin:0 0 6px;text-align:center}
+.lk-sub{color:var(--muted);font-size:14px;min-height:20px;margin:0 0 18px;text-align:center;max-width:300px}
+.lk-sub.err{color:var(--out);font-weight:700}
+.dots{display:flex;gap:14px;margin-bottom:30px;height:16px}
+.dots i{width:14px;height:14px;border-radius:50%;border:2px solid var(--ink)}
+.dots i.on{background:var(--ink)}
+.dots.shake{animation:shake .32s}
+@keyframes shake{20%{transform:translateX(-9px)}60%{transform:translateX(9px)}100%{transform:none}}
+.pad{display:grid;grid-template-columns:repeat(3,74px);gap:14px 24px}
+.pad button{width:74px;height:74px;border-radius:50%;border:0;background:var(--paper);font-size:28px;font-weight:600;box-shadow:0 0 0 1px var(--line)}
+.pad button:active{background:var(--soft)}
+.pad button.txt{background:transparent;box-shadow:none;font-size:14px;font-weight:700;color:var(--muted)}
+.pad button.ok{background:var(--in);color:#FFFFFF;box-shadow:none;font-size:16px;font-weight:800}
+.lk-foot{margin-top:24px}
 @media (prefers-reduced-motion:reduce){.sheet,.toast{transition:none}}
 </style>
 </head>
@@ -188,11 +205,12 @@ textarea.inp{min-height:180px;font-size:13px;font-family:ui-monospace,Menlo,Cons
   <button data-view="mes" class="on">Mes</button>
   <button data-view="ahorro">Ahorro</button>
   <button data-view="cuentas">Cuentas</button>
-  <button data-view="respaldo">Respaldo</button>
+  <button data-view="respaldo">Más</button>
 </nav>
 <div class="backdrop" id="bd"></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
 <div class="toast" id="toast" role="status"></div>
+<div id="lock" role="dialog" aria-modal="true" aria-label="Bloqueo con PIN"></div>
 <input type="file" id="fileIn" accept=".json,application/json" hidden>
 
 <script>
@@ -470,7 +488,11 @@ function viewCuentas(){
   return h;
 }
 function viewRespaldo(){
-  let h='<h1 class="page">Respaldo y texto</h1><p class="sub">Guarda una copia de todo o lleva el mes al formato de tu archivo de texto.</p><div class="card menu">';
+  const hasPin=!!pinData();
+  let h='<h1 class="page">Seguridad</h1><p class="sub">'+(hasPin?"La app pide tu PIN al abrirla y al regresar después de un minuto.":"Protege la app con un PIN de 4 a 6 números.")+'</p><div class="card menu">'+
+    (hasPin?'<button class="btn" data-act="pinlock">Bloquear ahora</button><button class="btn ghost" data-act="pinchange">Cambiar PIN</button><button class="btn danger" data-act="pinremove">Quitar PIN</button>'
+      :'<button class="btn" data-act="pinset">Poner PIN de acceso</button>')+'</div>';
+  h+='<h1 class="page" style="margin-top:22px">Respaldo y texto</h1><p class="sub">Guarda una copia de todo o lleva el mes al formato de tu archivo de texto.</p><div class="card menu">';
   if(downloads||OFFLINE){
     h+='<button class="btn" data-act="dljson">Descargar respaldo completo (.json)</button>';
     if(cur)h+='<button class="btn ghost" data-act="dltxt">Descargar '+esc(mName(cur))+' como texto (.txt)</button>';
@@ -855,6 +877,11 @@ document.addEventListener("click",e=>{
     case "dljson":save("finanzas-respaldo-"+new Date().toISOString().slice(0,10)+".json",JSON.stringify(S,null,1));break;
     case "dltxt":save("finanzas-"+cur+".txt",monthText(cur));break;
     case "import":$("#fileIn").click();break;
+    case "pinset":closeSheetQuiet();showLock("set1");break;
+    case "pinchange":showLock("old-change");break;
+    case "pinremove":showLock("old-remove");break;
+    case "pinlock":showLock("unlock");break;
+    case "pinlater":try{localStorage.setItem(PINASK,"1")}catch(e){}closeSheet();break;
     case "undo":undoDelete();break;
     case "showatxt":{const o=$("#txtout");if(o)o.innerHTML='<div class="card"><label class="field"><span>Mantén presionado para seleccionar y copiar</span><textarea class="inp" readonly id="txtarea">'+esc(ahorroText())+'</textarea></label><button class="btn" data-act="copy">Copiar texto</button></div>';break}
     case "dlatxt":save("ahorro-"+new Date().toISOString().slice(0,10)+".txt",ahorroText());break;
@@ -922,7 +949,82 @@ function renderKeep(){
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&sheetOpen)closeSheet()});
 window.addEventListener("beforeunload",()=>{if(mode==="nube"&&dirty.size)flush()});
 
+/* ---------- PIN de acceso ---------- */
+const PINK="finanzas-pin",PINASK="finanzas-pin-asked";
+function pinData(){try{return JSON.parse(localStorage.getItem(PINK)||"null")}catch(e){return null}}
+async function hashPin(pin,salt){
+  const t=salt+":"+pin;
+  try{if(window.crypto&&crypto.subtle){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(t));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("")}}catch(e){}
+  let h1=5381,h2=52711;for(let i=0;i<t.length;i++){const c=t.charCodeAt(i);h1=(h1*33)^c;h2=(h2*33)^c}return "x"+(h1>>>0).toString(16)+(h2>>>0).toString(16);
+}
+let lk=null,fails=0,waitUntil=0,hiddenAt=0;
+const LOGO='<svg class="lk-logo" width="56" height="56" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#000"/><rect x="12" y="30" width="10" height="16" rx="2" fill="#969696"/><rect x="27" y="24" width="10" height="22" rx="2" fill="#fff"/><rect x="42" y="13" width="10" height="33" rx="2" fill="#36C46B"/><rect x="10" y="49" width="44" height="2.5" rx="1" fill="#fff"/></svg>';
+function closeSheetQuiet(){$("#bd").classList.remove("show");$("#sheet").classList.remove("show");sheetOpen=false;draft=null}
+function showLock(mode,auto){lk={mode,entry:"",first:"",auto:!!auto,msg:"",err:false};drawLock();$("#lock").classList.add("show")}
+function hideLock(){lk=null;$("#lock").classList.remove("show");$("#lock").innerHTML=""}
+function drawLock(){
+  if(!lk)return;
+  const pd=pinData();
+  const T={unlock:["Mis finanzas","Escribe tu PIN"],set1:["Nuevo PIN","Escribe de 4 a 6 números y toca OK"],set2:["Confirma tu PIN","Escríbelo otra vez"],"old-change":["Cambiar PIN","Escribe tu PIN actual"],"old-remove":["Quitar PIN","Escribe tu PIN actual"]}[lk.mode];
+  const n=(lk.mode==="unlock"||lk.mode.startsWith("old"))&&pd?pd.len:lk.mode==="set2"?lk.first.length:Math.max(4,lk.entry.length);
+  let d="";for(let i=0;i<n;i++)d+='<i class="'+(i<lk.entry.length?"on":"")+'"></i>';
+  const left=lk.mode==="unlock"?'<button class="txt" data-pin="forgot">Olvidé mi PIN</button>':'<button class="txt" data-pin="cancel">Cancelar</button>';
+  const right=lk.mode==="set1"&&lk.entry.length>=4?'<button class="ok" data-pin="ok">OK</button>':'<button class="txt" data-pin="del" aria-label="Borrar">⌫</button>';
+  let pad="";for(let i=1;i<=9;i++)pad+='<button data-pin="'+i+'">'+i+'</button>';
+  pad+=left+'<button data-pin="0">0</button>'+right;
+  $("#lock").innerHTML=LOGO+'<p class="lk-title">'+T[0]+'</p><p class="lk-sub'+(lk.err?" err":"")+'">'+esc(lk.msg||T[1])+'</p><div class="dots" id="dots">'+d+'</div><div class="pad">'+pad+'</div>'+
+    (lk.mode==="set1"&&lk.entry.length>=4?'':(lk.mode==="set1"?'':''))+'';
+}
+function lockErr(msg){lk.entry="";lk.msg=msg;lk.err=true;drawLock();const d=$("#dots");if(d){d.classList.remove("shake");void d.offsetWidth;d.classList.add("shake")}if(navigator.vibrate)try{navigator.vibrate(120)}catch(e){}}
+async function pinKey(k){
+  if(!lk)return;
+  if(k==="cancel"){hideLock();render();return}
+  if(k==="forgot"){
+    if(confirm("Si olvidaste tu PIN, la única forma de entrar es borrar los datos guardados en este equipo y restaurar un respaldo después. ¿Borrar los datos de este equipo?")&&confirm("¿Seguro? Esto no se puede deshacer.")){
+      try{localStorage.removeItem(LS);localStorage.removeItem(PINK)}catch(e){}
+      location.reload();
+    }
+    return;
+  }
+  if(k==="del"){lk.entry=lk.entry.slice(0,-1);lk.err=false;lk.msg="";drawLock();return}
+  if(Date.now()<waitUntil){lk.msg="Demasiados intentos. Espera unos segundos.";lk.err=true;drawLock();return}
+  const pd=pinData();
+  if(k==="ok"){if(lk.mode==="set1"&&lk.entry.length>=4){lk.first=lk.entry;lk.entry="";lk.mode="set2";lk.msg="";lk.err=false;drawLock()}return}
+  if(!/^\d$/.test(k))return;
+  const max=(lk.mode==="unlock"||lk.mode.startsWith("old"))&&pd?pd.len:lk.mode==="set2"?lk.first.length:6;
+  if(lk.entry.length>=max)return;
+  lk.entry+=k;lk.err=false;lk.msg="";drawLock();
+  if(lk.entry.length<max)return;
+  if(lk.mode==="set1"){lk.first=lk.entry;lk.entry="";lk.mode="set2";drawLock();return}
+  if(lk.mode==="set2"){
+    if(lk.entry!==lk.first){lk.mode="set1";lk.first="";lockErr("No coinciden. Escribe tu nuevo PIN otra vez.");return}
+    const salt=Math.random().toString(36).slice(2,12);
+    try{localStorage.setItem(PINK,JSON.stringify({salt,len:lk.entry.length,hash:await hashPin(lk.entry,salt)}));localStorage.setItem(PINASK,"1")}catch(e){}
+    hideLock();render();toast("PIN guardado.");return;
+  }
+  // unlock / old-*
+  const ok=pd&&(await hashPin(lk.entry,pd.salt))===pd.hash;
+  if(!ok){fails++;if(fails>=5){waitUntil=Date.now()+30000;fails=0;lockErr("Demasiados intentos. Espera 30 segundos.")}else lockErr("PIN incorrecto");return}
+  fails=0;
+  if(lk.mode==="unlock"){hideLock();return}
+  if(lk.mode==="old-change"){lk.mode="set1";lk.entry="";lk.msg="";drawLock();return}
+  if(lk.mode==="old-remove"){try{localStorage.removeItem(PINK)}catch(e){}hideLock();render();toast("PIN quitado.");return}
+}
+$("#lock").addEventListener("click",e=>{const b=e.target.closest("[data-pin]");if(b)pinKey(b.dataset.pin)});
+document.addEventListener("keydown",e=>{if(!lk)return;if(/^\d$/.test(e.key))pinKey(e.key);else if(e.key==="Backspace")pinKey("del");else if(e.key==="Enter")pinKey("ok");e.stopPropagation()},true);
+document.addEventListener("visibilitychange",()=>{
+  if(!pinData())return;
+  if(document.hidden){hiddenAt=Date.now();if(!lk)showLock("unlock",true)}
+  else if(lk&&lk.auto&&lk.mode==="unlock"&&!lk.entry&&Date.now()-hiddenAt<60000)hideLock();
+  else if(lk)lk.auto=false;
+});
+if(pinData())showLock("unlock");
+
 init();
+setTimeout(()=>{
+  let asked=false;try{asked=!!localStorage.getItem(PINASK)}catch(e){}
+  if(!pinData()&&!asked&&!lk&&!sheetOpen)openSheet('<h3>¿Proteger la app con un PIN?</h3><p class="sub">Te pedirá un PIN de 4 a 6 números cada vez que la abras. Lo puedes cambiar o quitar en la pestaña Más.</p><div class="actions"><button class="btn ghost" data-act="pinlater">Ahora no</button><button class="btn" data-act="pinset">Poner PIN</button></div>');
+},900);
 if(!window.Capacitor&&"serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("sw.js").catch(()=>{});
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
 })();
